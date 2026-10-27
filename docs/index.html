@@ -1,1 +1,109 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MLP + ONNX | Iris</title>
+  <style>
+    :root {font-family:Inter,system-ui,-apple-system,sans-serif;color:#153048;background:#f3f7fb}
+    * {box-sizing:border-box}
+    main {max-width:700px;margin:42px auto;padding:0 18px}
+    .card {background:white;border-radius:18px;padding:28px;box-shadow:0 12px 36px #173b5616}
+    h1 {font-size:1.8rem;margin:0 0 8px}
+    .subtitle {color:#53677a;margin-top:0;line-height:1.6}
+    .tag {color:#087a71;font-size:.8rem;font-weight:700;letter-spacing:.05em}
+    .fields {display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px;margin:25px 0}
+    label {font-weight:650;font-size:.9rem;display:block}
+    input {width:100%;margin-top:7px;border:1px solid #c7d5e2;border-radius:9px;padding:13px;font-size:1rem}
+    button {width:100%;background:#087c76;color:white;font-size:1rem;font-weight:bold;border:0;border-radius:10px;padding:15px;cursor:pointer}
+    button:disabled {opacity:.5;cursor:not-allowed}
+    #status {font-size:.88rem;color:#567;margin:12px 0}
+    #result {margin-top:22px;padding:18px;border-radius:12px;background:#edf8f7}
+    .barline {display:flex;justify-content:space-between;margin-top:16px;font-size:.9rem}
+    .track {height:11px;background:#d7e8e5;border-radius:10px;overflow:hidden;margin-top:5px}
+    .fill {height:100%;width:0;background:#0a9185;transition:width .3s}
+    footer {margin:16px 0;text-align:center;color:#708297;font-size:.8rem}
+    @media(max-width:440px){.fields{grid-template-columns:1fr}.card{padding:20px}}
+  </style>
+</head>
+<body>
+  <main>
+    <div class="card">
+      <div class="tag">MACHINE LEARNING · ONNX RUNTIME WEB</div>
+      <h1>Clasificador de flores Iris</h1>
+      <p class="subtitle">Entrenada localmente en Python, exportada a ONNX y ejecutada en tu navegador. Ingresa medidas en centímetros.</p>
+      <p id="status" role="status">Cargando modelo ONNX…</p>
+      <form id="form">
+        <div class="fields">
+          <label>Largo del sépalo (cm)<input id="sl" type="number" step="any" min="0.1" value="5.1" required /></label>
+          <label>Ancho del sépalo (cm)<input id="sw" type="number" step="any" min="0.1" value="3.5" required /></label>
+          <label>Largo del pétalo (cm)<input id="pl" type="number" step="any" min="0.1" value="1.4" required /></label>
+          <label>Ancho del pétalo (cm)<input id="pw" type="number" step="any" min="0.1" value="0.2" required /></label>
+        </div>
+        <button id="predict" type="submit" disabled>Clasificar flor</button>
+      </form>
+      <section id="result" hidden aria-live="polite">
+        <strong id="classification"></strong>
+        <div id="probabilities"></div>
+      </section>
+    </div>
+    <footer>Inferencia local con WebAssembly · Sin backend de predicción</footer>
+  </main>
+  <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/ort.min.js"></script>
+  <script>
+    const names = ['Setosa', 'Versicolor', 'Virginica'];
+    let session;
+    const status = document.getElementById('status');
+    const button = document.getElementById('predict');
+    const escapeHtml = str => str.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
+    async function init() {
+      try {
+        if (!window.ort) throw new Error('No se pudo cargar la biblioteca ONNX Runtime Web');
+        ort.env.wasm.numThreads = 1;
+        // Empareja la versión del motor WASM con la biblioteca JavaScript.
+        ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/';
+        session = await ort.InferenceSession.create('./model.onnx', {executionProviders: ['wasm']});
+        status.textContent = '✓ Modelo cargado. Listo para predecir.';
+        button.disabled = false;
+      } catch (error) {
+        status.textContent = 'Error al cargar el modelo: ' + error.message + '. Ejecuta train.py y usa un servidor HTTP.';
+        console.error(error);
+      }
+    }
+
+    document.getElementById('form').addEventListener('submit', async event => {
+      event.preventDefault();
+      if (!session) return;
+      const values = ['sl','sw','pl','pw'].map(id => Number(document.getElementById(id).value));
+      if (values.some(n => !Number.isFinite(n) || n <= 0)) {
+        status.textContent = 'Introduce cuatro medidas positivas válidas.';
+        return;
+      }
+      try {
+        button.disabled = true;
+        const tensor = new ort.Tensor('float32', Float32Array.from(values), [1, 4]);
+        const result = await session.run({[session.inputNames[0]]: tensor});
+        const label = Number(result[session.outputNames[0]].data[0]);
+        const probs = Array.from(result[session.outputNames[1]].data);
+        if (!Number.isInteger(label) || label < 0 || label >= names.length || probs.length !== 3) {
+          throw new Error('Formato de salida ONNX inesperado');
+        }
+        document.getElementById('classification').textContent = 'Predicción: Iris ' + names[label];
+        document.getElementById('probabilities').innerHTML = probs.map((p, i) => `
+          <div class="barline"><span>${escapeHtml(names[i])}</span><strong>${(100*p).toFixed(1)}%</strong></div>
+          <div class="track"><div class="fill" style="width:${Math.max(0,Math.min(100,100*p))}%"></div></div>
+        `).join('');
+        document.getElementById('result').hidden = false;
+        status.textContent = '✓ Inferencia completada en el navegador.';
+      } catch (error) {
+        status.textContent = 'No se pudo clasificar: ' + error.message;
+        console.error(error);
+      } finally {
+        button.disabled = false;
+      }
+    });
+    init();
+  </script>
+</body>
+</html>
